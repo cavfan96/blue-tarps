@@ -1,0 +1,1467 @@
+---
+title: "Haiti Project Part2"
+author: "Paul Hicks"
+date: "11/15/2020"
+output: 
+  html_document:
+    toc: TRUE
+    tod_depth: 4
+    toc_float: true
+    toc_collapsed: true
+    theme: cerulean
+    code_folding: hide
+---
+
+## Introduction
+
+In this scenario, we are looking to develop the most powerful predictive model we can to recover victims from the Haiti earthquake in 2010. We have a number of international recovery teams deploying to the island and we will have to guide them to the families and victims that require our aid. We have a data set of RGB values and categorical variables denoting the structure types and we will have to prepare a dynamic model capability to continuously improve the situation on the ground. We expect that our data and modeling capabilities will be relied up for geographic dispersal of the recovery assets on hand.
+
+Statistically speaking, we will have to balance two potentially competing factors. Most importantly, we will have to develop a model that has a high rate of detection regarding true positives as our predictive power to save lives will rely heavily on this metric. We will turn to sensitivity as a guide during the model build and decision phase for this evaluation.
+
+On the other hand, we will have to pick a model that also returns a low false positive rate. Each false positive has the potential of drawing down precious resources unnecessarily and given that we are deploying recovery teams at least a few days after the initial earthquake in Haiti, time will be of the essence in terms of warding off starvation or disease outbreaks due to poor sanitation for long durations in and around the affected communities. We will look at both precision and specificity as our main metrics to guide this balance, though to be fair, there are many metrics one could employ to develop an outcome that fits their risk acceptance and perception.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, fig.align = 'center')
+```
+
+
+### Initial Set-up, data, libraries
+
+The goal in this phase was to ingest the csv containing the training data and begin developing the features that will enable an effective predictive model build. I also employed the plotly library to observe the data cloud and see how the different features might impact model choice and accuracy of our models. In general, as the RGB values trended to the higher range, a cleaner split between the "blue tarps" and the other classes (rooftop, soil, etc.) becomes more clear. The low end of the RGB values in the data points, however, have considerably more overlap suggesting that linear models and otherwise less flexible choices may not prevail for our data. 
+
+
+```{r setup, get a feel for the data, plotly=TRUE}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(readr)
+library(MASS)
+library(class)
+library(plotly)
+library(caret)
+library(caTools)
+library(doParallel)
+
+# set-up parallel processing
+# tips for this were provided by colleagues in the cohort
+# including Bob and Bobby
+
+registerDoParallel()
+getDoParWorkers()
+
+haiti_original <- read.csv2("../data/HaitiPixels.csv", header = TRUE, sep = ",")
+str(haiti_original)
+
+# Several lines are now commented out that were initially used
+# to get a sense of the data.
+
+# names(haiti_original)
+# head(haiti_original)
+# tail(haiti_original)
+# make sure Class is a categorical var
+# is.factor(haiti_original$Class)
+haiti_original$Class<-as.factor(haiti_original$Class)
+# is.factor(haiti_original$Class)
+# contrasts(haiti_original$Class)
+# levels(haiti_original$Class)
+# create a new variable Tarp that is a 1 for "Blue Tarp" and a 0 for everything else
+haiti_original$tarp<-ifelse(haiti_original$Class=="Blue Tarp", "Yes", "No")
+
+# is.factor(haiti_original$tarp)
+# names(haiti_original)
+haiti_original$tarp<-as.factor(haiti_original$tarp)
+contrasts(haiti_original$tarp)
+# head(haiti_original)
+# tail(haiti_original)
+str(haiti_original)
+# summary(haiti_original)
+# 2022 blue tarps
+# 61219 non-blue tarps
+
+# Test-Train Split for the Data
+# Ref: https://stackoverflow.com/questions/36068963/r-how-to-split-a-data-frame-into-training-validation-and-test-sets
+set.seed(101)
+train.haiti <- sample.int(nrow(haiti_original), nrow(haiti_original)*0.75, replace=F)
+train.haiti.data <- haiti_original[train.haiti,]
+test.haiti.data <- haiti_original[-train.haiti,]
+# dim(train.haiti.data) #47430, 5
+# dim(test.haiti.data) #15811, 5
+# names(test.haiti.data)
+# names(train.haiti.data)
+
+# Take a look at the original data
+# I had a discussion with Sam from class about Plotly and she provided this resource:
+# https://plotly.com/r/3d-scatter-plots/
+# library(plotly)
+
+color_3d <-plot_ly(haiti_original, x=~Red, y=~Green, z=~Blue,
+                   color=~Class, colors = c('#0E74EB', '#F0CD62', '#F09E7B', '#B1C1E3', '#54AD21'),
+                   size=1)
+color_3d<-color_3d%>%add_markers()
+color_3d
+
+```
+
+
+## Model Building
+
+The general approach will be to use the CARET package to train each model in a K-folds CV setting with 10-folds and score the model against a separately held out test training data set, all of which comes from our first 60K observations. In the cases where tuning parameters will have to be optimized, we will use a combination of approaches that will either a) manually employ tuneGrid for a range of values or b) let CARET optimize. Once done, we will take a look at the results in performance as well as the tuning parameter selections and either go with what CARET decided or rationalize slighly different choices, all of which will be aimed at improving performance and robustness as we complete this initial phase. We will also provide confusion matrices for each "fold" so that we can get a sense of sampling variance and how we should evaluate our metrics for each model.
+
+### LDA
+
+```{r}
+# Discussion on 9/24 Office Hours informed this approach
+set.seed(91)
+haiti.tarp.lda<-train(
+  tarp~Red+Green+Blue,
+  data=train.haiti.data,
+  method="lda",
+  trControl=trainControl(method="cv", number=10, 
+                         savePredictions="final",
+                         classProbs = TRUE)
+)
+haiti.tarp.lda # accuracy 98.44%
+
+# find the predictions against test data
+lda.pred = predict(haiti.tarp.lda, newdata = test.haiti.data)
+
+# Develop Confusion Matrix and assign it for later use
+lda_perf <- confusionMatrix(lda.pred, test.haiti.data$tarp, positive = "Yes")
+lda_perf
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15137   131
+#        Yes   150   393
+#                                         
+#                Accuracy : 0.9822        
+#                  95% CI : (0.98, 0.9842)
+#     No Information Rate : 0.9669        
+#     P-Value [Acc > NIR] : <2e-16        
+#                                         
+#                   Kappa : 0.7275        
+#                                         
+#  Mcnemar's Test P-Value : 0.2829        
+#                                         
+#             Sensitivity : 0.9902        
+#             Specificity : 0.7500        
+#          Pos Pred Value : 0.9914        
+#          Neg Pred Value : 0.7238        
+#              Prevalence : 0.9669        
+#          Detection Rate : 0.9574        
+#    Detection Prevalence : 0.9657        
+#       Balanced Accuracy : 0.8701        
+#                                         
+#        'Positive' Class : No 
+
+threshold <- 0.50
+# haiti.tarp.lda$pred
+# learned from Office Hours with Prof. Schwartz
+lda_folds_CM <- haiti.tarp.lda$pred %>%
+  dplyr::mutate(pred2 = ifelse(Yes > threshold, "Yes", "No")) %>%
+  dplyr::mutate(pred2 = factor(pred2, levels = c("No", "Yes"))) %>%
+  dplyr::group_split(Resample) %>%
+  purrr::map( ~ caret::confusionMatrix(data=.x$pred2, reference=.x$obs, positive="Yes"))
+
+# take a quick look at the folds' confusion matrices
+lda_folds_CM
+
+# results appear robust to sampling variance, though there are certainly small
+# differences in each fold.
+
+# drop the threshold to see if we can reduce the fnr, but we are honestly in bad position
+lda_perf$table
+# because we also have a high fpr - wasting resources
+
+# I studied the Saturday OH's to sort out how to change the thresholds
+threshold <- 0.20
+
+# find the predictions against test data
+lda.pred2 = as.factor(ifelse(predict(haiti.tarp.lda, newdata = test.haiti.data, type = 'prob')$Yes>threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+lda_perf2 <- confusionMatrix(lda.pred2, test.haiti.data$tarp, positive = "Yes")
+lda_perf2$table #102 false negatives, with 183 false positives
+
+# try one more drop in the threshold, but this is really not performing well
+threshold <- 0.15 # judging from the AOC curve
+
+# find the predictions against test data
+lda.pred3 = as.factor(ifelse(predict(haiti.tarp.lda, newdata = test.haiti.data, type = 'prob')$Yes>threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+lda_perf3 <- confusionMatrix(lda.pred3, test.haiti.data$tarp, positive = "Yes")
+lda_perf3$table # 99 false negatives still, with 189 false positives, this is truly terrible but seems to be the best we can do with LDA for now and we did not expect a linear model to perform well.
+
+# for use in the ROC Curve
+lda.prob2 <- predict(haiti.tarp.lda, newdata = test.haiti.data, type = "prob")
+test.haiti.data$tarp.num <- ifelse(test.haiti.data$tarp=="Yes",
+                                    yes=1, no=0)
+# AUC is 98.7%
+colAUC(lda.prob2, test.haiti.data$tarp.num, plotROC=TRUE)
+# store values for use in table later
+lda_AUC <-0.987229
+lda_threshold <- 0.15
+
+# build values for use in table 1
+lda.t1.vector <- c(lda_perf3$overall[1], lda_AUC, lda_threshold, lda_perf3$byClass[1], lda_perf3$byClass[2], (1-lda_perf3$byClass[3]), lda_perf3$byClass[5]) %>% as.data.frame()
+
+# lda.t1.vector %>% as.data.frame()
+
+# function for rounding
+# https://stackoverflow.com/questions/29875914/rounding-values-in-a-dataframe-in-r
+
+round_df <- function(input_df, digits){
+  numeric_columns <- sapply(input_df, mode)=='numeric'
+  input_df[numeric_columns] <- round(input_df[numeric_columns], digits)
+  input_df
+}
+
+# format(lda.t1.vector[2:5], digits=2)
+# lda.t1.vector
+lda.t1.vector <- round_df(lda.t1.vector, 4)
+# lda.t1.vector
+
+```
+
+The confidence intervals for each fold do appear tight, sufficiently so, that we can report the metrics as point estimates. Should any subsequent model warrant a different conclusion, I will explicitly state that in the appropriate section.
+
+
+### QDA
+
+```{r}
+set.seed(91)
+haiti.tarp.qda<-train(
+  tarp~Red+Green+Blue,
+  data=train.haiti.data,
+  method="qda",
+  trControl=trainControl(method="cv", number=10, 
+                         savePredictions="final",
+                         classProbs = TRUE)
+)
+haiti.tarp.qda # accuracy 99.49%
+
+# find the predictions against test data
+qda.pred = predict(haiti.tarp.qda, newdata = test.haiti.data)
+
+# Develop Confusion Matrix and assign it for later use
+qda_perf <- confusionMatrix(qda.pred, test.haiti.data$tarp, positive = "Yes")
+qda_perf
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15281    98
+#        Yes     6   426
+#                                          
+#                Accuracy : 0.9934         
+#                  95% CI : (0.992, 0.9946)
+#     No Information Rate : 0.9669         
+#     P-Value [Acc > NIR] : < 2.2e-16      
+#                                          
+#                   Kappa : 0.8879         
+#                                          
+#  Mcnemar's Test P-Value : < 2.2e-16      
+#                                          
+#             Sensitivity : 0.9996         
+#             Specificity : 0.8130         
+#          Pos Pred Value : 0.9936         
+#          Neg Pred Value : 0.9861         
+#              Prevalence : 0.9669         
+#          Detection Rate : 0.9665         
+#    Detection Prevalence : 0.9727         
+#       Balanced Accuracy : 0.9063         
+#                                          
+#        'Positive' Class : No
+
+threshold <- 0.50
+# learned from Office Hours with Prof. Schwartz
+qda_folds_CM <- haiti.tarp.qda$pred %>%
+  dplyr::mutate(pred2 = ifelse(Yes > threshold, "Yes", "No")) %>%
+  dplyr::mutate(pred2 = factor(pred2, levels = c("No", "Yes"))) %>%
+  dplyr::group_split(Resample) %>%
+  purrr::map( ~ caret::confusionMatrix(data=.x$pred2, reference=.x$obs, positive="Yes"))
+
+# take a quick look at the folds
+qda_folds_CM
+# While there is sampling variance, it does not appear to be significant in 
+# this case.
+
+# I do want to see if we can drop the fnr and have higher specificity and 
+# since our fdr is very low, we do have some room to play with
+threshold <- 0.20
+
+# find the predictions against test data
+qda.pred2 = as.factor(ifelse(predict(haiti.tarp.qda, newdata = test.haiti.data, type = 'prob')$Yes>threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+qda_perf2 <- confusionMatrix(qda.pred2, test.haiti.data$tarp, positive = "Yes")
+qda_perf2$table
+
+threshold <- 0.10
+
+# find the predictions against test data
+qda.pred3 = as.factor(ifelse(predict(haiti.tarp.qda, newdata = test.haiti.data, type = 'prob')$Yes>threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+qda_perf3 <- confusionMatrix(qda.pred3, test.haiti.data$tarp, positive = "Yes")
+qda_perf3$table
+
+# reversing direction due to high fdr
+threshold <- 0.15
+
+# find the predictions against test data
+qda.pred4 = as.factor(ifelse(predict(haiti.tarp.qda, newdata = test.haiti.data, type = 'prob')$Yes>threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+qda_perf4 <- confusionMatrix(qda.pred4, test.haiti.data$tarp, positive = "Yes")
+qda_perf4$table
+
+# I will stick with the threshold from 0.20 given that the fdr is really unstable at lower values
+qda_perf2
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15271    75
+#        Yes    16   449
+#                                           
+#                Accuracy : 0.9942          
+#                  95% CI : (0.9929, 0.9954)
+#     No Information Rate : 0.9669          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.905           
+#                                           
+#  Mcnemar's Test P-Value : 1.201e-09       
+#                                           
+#             Sensitivity : 0.9990          
+#             Specificity : 0.8569          
+#          Pos Pred Value : 0.9951          
+#          Neg Pred Value : 0.9656          
+#              Prevalence : 0.9669          
+#          Detection Rate : 0.9658          
+#    Detection Prevalence : 0.9706          
+#       Balanced Accuracy : 0.9279          
+#                                           
+#        'Positive' Class : No 
+
+# calculate the probabilities for use in ROC Curve
+qda.prob2 <- predict(haiti.tarp.qda, newdata = test.haiti.data, type = "prob")
+# AUC is 99.83631%
+colAUC(qda.prob2, test.haiti.data$tarp.num, plotROC=TRUE)
+
+# prepare values for use in the table later
+# https://stackoverflow.com/questions/29686923/how-to-retain-column-headings-when-using-cbind-with-matrices-in-r
+
+qda_threshold <- 0.20
+qda_AUC <- 0.9983631
+
+# build values for use in table 1
+qda.t1.vector <- c(qda_perf2$overall[1], qda_AUC, qda_threshold, qda_perf2$byClass[1], qda_perf2$byClass[2], (1-qda_perf2$byClass[3]), qda_perf2$byClass[5]) %>% as.data.frame()
+
+qda.t1.vector <- round_df(qda.t1.vector, 4)
+# qda.t1.vector
+
+# create the table, name the columns from the confusion matrices, which were
+# set in each model chunk as the "model".t1.vector of each final model 
+# finally name the rows
+# t1 <- cbind(knn.t1.vector, lda.t1.vector, qda.t1.vector, glm.t1.vector, 
+#             rf.t1.vector, svm.t1.vector)
+# colnames(t1) <- c("knn (k=11)", "lda", "qda", "log reg", "RF (mtry=2)", "svmRBF (sigma=2, c=100)")
+# rownames(t1)<- c('Accuracy', 'AUC', 'Threshold', 'Sensitivity', 'Specificity', 'FDR', 'Precision')
+# t1 
+
+```
+
+
+### KNN 
+
+Similar to project 1, I will optimize a KNN model using CARET over a tuneGrid of possible K-values from 1:20 and let CARET suggest the best K-value depending on accuracy and CV out-of-folds error rates. I will ultimately take a look at the CARET results to determine a final selection on the K-value.
+
+```{r}
+set.seed(91)
+haiti.tarp.knn.cv<-train(
+  tarp~Red+Green+Blue,
+  data=train.haiti.data,
+  method="knn",
+  preProcess=c("center", "scale"),
+  tuneGrid=data.frame(k=seq(1,20,1)),
+  trControl=trainControl(method="cv", number=10,
+                         returnResamp = 'all',
+                         savePredictions='final',
+                         classProbs=TRUE,
+                         allowParallel = TRUE)
+)
+
+haiti.tarp.knn.cv # k=3 selected by caret
+# haiti.tarp.knn.cv$pred
+
+# k-Nearest Neighbors 
+# 
+# 47430 samples
+#     3 predictor
+#     2 classes: 'No', 'Yes' 
+# 
+# Pre-processing: centered (3), scaled (3) 
+# Resampling: Cross-Validated (10 fold) 
+# Summary of sample sizes: 42687, 42687, 42688, 42687, 42687, 42687, ... 
+# Resampling results across tuning parameters:
+# 
+#   k   Accuracy   Kappa    
+#    1  0.9966899  0.9456204
+#    2  0.9966688  0.9453860
+#    3  0.9971327  0.9529514
+#    4  0.9969851  0.9506150
+#    5  0.9969218  0.9496533
+#    6  0.9968375  0.9481008
+#    7  0.9970061  0.9508068
+#    8  0.9971116  0.9526608
+#    9  0.9969851  0.9505346
+#   10  0.9968796  0.9488388
+#   11  0.9970272  0.9511869
+#   12  0.9969640  0.9500959
+#   13  0.9969640  0.9501106
+#   14  0.9969218  0.9494029
+#   15  0.9969429  0.9498024
+#   16  0.9969007  0.9491353
+#   17  0.9969218  0.9494971
+#   18  0.9969007  0.9491404
+#   19  0.9969218  0.9494625
+#   20  0.9968375  0.9480359
+# 
+# Accuracy was used to select the optimal model using the largest value.
+# The final value used for the model was k = 3.
+
+# Judging by the results above I do want to seek out and select a different value than what CARET returned.
+# While CARET provides a solid K value based on accuracy, I'm concerned that in a larger data set, such a low value of K (3), will not prove robust enough to perform better and may be susceptible to variance errors.
+# Hence, I will choose K = 7, as it is very close (insignificant difference) in accuracy to the K=3 performance and provides for potentially more stability.
+
+haiti.tarp.knn.cv<-train(
+  tarp~Red+Green+Blue,
+  data=train.haiti.data,
+  method="knn",
+  preProcess=c("center", "scale"),
+  tuneGrid=data.frame(k=seq(7,7,1)), # just use k-7, studied from OH's.
+  trControl=trainControl(method="cv", number=10,
+                         returnResamp = 'all',
+                         savePredictions='final',
+                         classProbs=TRUE,
+                         allowParallel = TRUE)
+)
+
+haiti.tarp.knn.cv
+
+# find the predictions against test data
+knn.pred = predict(haiti.tarp.knn.cv, newdata = test.haiti.data)
+
+# Develop Confusion Matrix and assign it for later use
+knn_perf <- confusionMatrix(knn.pred, test.haiti.data$tarp, positive = "Yes")
+knn_perf
+# 
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15264    20
+#        Yes    23   504
+#                                          
+#                Accuracy : 0.9973         
+#                  95% CI : (0.9963, 0.998)
+#     No Information Rate : 0.9669         
+#     P-Value [Acc > NIR] : <2e-16         
+#                                          
+#                   Kappa : 0.9577         
+#                                          
+#  Mcnemar's Test P-Value : 0.7604         
+#                                          
+#             Sensitivity : 0.9985         
+#             Specificity : 0.9618         
+#          Pos Pred Value : 0.9987         
+#          Neg Pred Value : 0.9564         
+#              Prevalence : 0.9669         
+#          Detection Rate : 0.9654         
+#    Detection Prevalence : 0.9667         
+#       Balanced Accuracy : 0.9802         
+#                                          
+#        'Positive' Class : No 
+
+# I do not see a reason to change the threshold from 0.50 because we have high sensitivity, specificity, precision and low fdr.
+
+# calculate the probabilities for use in ROC Curve
+knn_threshold <- 0.50
+
+# learned from Office Hours with Prof. Schwartz
+knn_folds_CM <- haiti.tarp.knn.cv$pred %>%
+  dplyr::mutate(pred2 = ifelse(Yes > knn_threshold, "Yes", "No")) %>%
+  dplyr::mutate(pred2 = factor(pred2, levels = c("No", "Yes"))) %>%
+  dplyr::group_split(Resample) %>%
+  purrr::map( ~ caret::confusionMatrix(data=.x$pred2, reference=.x$obs, positive="Yes"))
+
+# take a quick look at the folds
+knn_folds_CM
+# while there is sample variance, it does appear to be sufficiently small enough
+# that ultimately it will have less significance in our predictive power.
+
+knn.prob <- predict(haiti.tarp.knn.cv, newdata = test.haiti.data, type = "prob")
+# AUC is 99.97307%
+colAUC(knn.prob, test.haiti.data$tarp.num, plotROC=TRUE)
+
+
+knn_AUC <- 0.9976924
+
+# build values for use in table 1
+knn.t1.vector <- c(knn_perf$overall[1], knn_AUC, knn_threshold, knn_perf$byClass[1], knn_perf$byClass[2], (1-knn_perf$byClass[3]), knn_perf$byClass[5]) %>% as.data.frame()
+
+knn.t1.vector <- round_df(knn.t1.vector, 4)
+# knn.t1.vector
+```
+
+
+### Logistic Regression
+
+```{r}
+set.seed(91)
+haiti.tarp.glm <- train(
+  form = tarp~Red+Green+Blue,
+  data = train.haiti.data,
+  trControl = trainControl(method="cv", number=10,
+                         savePredictions='final',
+                         classProbs=TRUE),
+  method="glm",
+  family="binomial"
+)
+
+haiti.tarp.glm 
+
+# find the predictions against test data
+glm.pred = predict(haiti.tarp.glm, newdata = test.haiti.data)
+
+# Develop Confusion Matrix and assign it for later use
+glm_perf <- confusionMatrix(glm.pred, test.haiti.data$tarp, positive = "Yes")
+glm_perf
+# 
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15267    67
+#        Yes    20   457
+#                                           
+#                Accuracy : 0.9945          
+#                  95% CI : (0.9932, 0.9956)
+#     No Information Rate : 0.9669          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.9103          
+#                                           
+#  Mcnemar's Test P-Value : 8.151e-07       
+#                                           
+#             Sensitivity : 0.9987          
+#             Specificity : 0.8721          
+#          Pos Pred Value : 0.9956          
+#          Neg Pred Value : 0.9581          
+#              Prevalence : 0.9669          
+#          Detection Rate : 0.9656          
+#    Detection Prevalence : 0.9698          
+#       Balanced Accuracy : 0.9354          
+#                                           
+#        'Positive' Class : No 
+
+threshold <- 0.50
+# learned from Office Hours with Prof. Schwartz
+glm_folds_CM <- haiti.tarp.glm$pred %>%
+  dplyr::mutate(pred2 = ifelse(Yes > threshold, "Yes", "No")) %>%
+  dplyr::mutate(pred2 = factor(pred2, levels = c("No", "Yes"))) %>%
+  dplyr::group_split(Resample) %>%
+  purrr::map( ~ caret::confusionMatrix(data=.x$pred2, reference=.x$obs, positive="Yes"))
+
+glm_folds_CM
+# Results per fold appear sufficiently robust though there is certainly
+# some sampling variance.
+
+# I do want to see if we can drop the fnr and have higher specificity and 
+# since our fdr is very low, we do have some room to play with
+threshold <- 0.20
+
+# find the predictions against test data
+glm.pred2 = as.factor(ifelse(predict(haiti.tarp.glm, newdata = test.haiti.data, type = 'prob')$Yes>threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+glm_perf2 <- confusionMatrix(glm.pred2, test.haiti.data$tarp, positive="Yes")
+glm_perf2$table
+
+# This is about as high of an fdr as I am comfortable with.
+glm_perf2
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15259    48
+#        Yes    28   476
+#                                          
+#                Accuracy : 0.9952         
+#                  95% CI : (0.994, 0.9962)
+#     No Information Rate : 0.9669         
+#     P-Value [Acc > NIR] : <2e-16         
+#                                          
+#                   Kappa : 0.9236         
+#                                          
+#  Mcnemar's Test P-Value : 0.0293         
+#                                          
+#             Sensitivity : 0.9982         
+#             Specificity : 0.9084         
+#          Pos Pred Value : 0.9969         
+#          Neg Pred Value : 0.9444         
+#              Prevalence : 0.9669         
+#          Detection Rate : 0.9651         
+#    Detection Prevalence : 0.9681         
+#       Balanced Accuracy : 0.9533         
+#                                          
+#        'Positive' Class : No  
+
+# calculatate the probabilities for use in ROC Curve
+glm.prob <- predict(haiti.tarp.glm, newdata = test.haiti.data, type = "prob")
+# AUC is 99.82%
+colAUC(glm.prob, test.haiti.data$tarp.num, plotROC=TRUE)
+
+# build final values for use in table 1
+glm_threshold <- 0.20
+glm_AUC <- 0.9982
+
+glm.t1.vector <- c(glm_perf2$overall[1], glm_AUC, glm_threshold, glm_perf2$byClass[1], glm_perf2$byClass[2], (1-glm_perf2$byClass[3]), glm_perf2$byClass[5]) %>% as.data.frame()
+
+glm.t1.vector <- round_df(glm.t1.vector, 4)
+# glm.t1.vector
+
+```
+
+
+### Random Forest
+
+Given the small number of parameters available in our model, we will use CARET and a tuneGrid for mtry between 1 and 3 and allow CARET to optimize the value for mtry as well as the number of trees. If the accuracy proves really poor, we will consider manually tuning the ntree value as well.
+
+```{r}
+# References: Used the tidy lab and the following for general approach:
+#   
+#   https://rpubs.com/phamdinhkhanh/389752
+
+set.seed(91)
+haiti.tarp.rf <- train(tarp~Red+Green+Blue, data=train.haiti.data, 
+                       method='rf', 
+                       importance=TRUE,
+                       tuneGrid=data.frame(mtry=c(1:3)),
+                       trControl=trainControl("cv", number=10, returnResamp = 'all', 
+                                              savePredictions = 'final', classProbs = TRUE,
+                         allowParallel = TRUE))
+
+haiti.tarp.rf # 99.69% training accuracy with mtry of 2
+
+# find the predictions against test data
+rf.pred = predict(haiti.tarp.rf, newdata = test.haiti.data)
+
+# Develop Confusion Matrix and assign it for later use
+rf_perf <- confusionMatrix(rf.pred, test.haiti.data$tarp, positive="Yes")
+rf_perf
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15266    23
+#        Yes    21   501
+#                                          
+#                Accuracy : 0.9972         
+#                  95% CI : (0.9963, 0.998)
+#     No Information Rate : 0.9669         
+#     P-Value [Acc > NIR] : <2e-16         
+#                                          
+#                   Kappa : 0.9565         
+#                                          
+#  Mcnemar's Test P-Value : 0.8802         
+#                                          
+#             Sensitivity : 0.9986         
+#             Specificity : 0.9561         
+#          Pos Pred Value : 0.9985         
+#          Neg Pred Value : 0.9598         
+#              Prevalence : 0.9669         
+#          Detection Rate : 0.9655         
+#    Detection Prevalence : 0.9670         
+#       Balanced Accuracy : 0.9774         
+#                                          
+#        'Positive' Class : No 
+
+threshold <- 0.50
+# learned from Office Hours with Prof. Schwartz
+rf_folds_CM <- haiti.tarp.rf$pred %>%
+  dplyr::mutate(pred2 = ifelse(Yes > threshold, "Yes", "No")) %>%
+  dplyr::mutate(pred2 = factor(pred2, levels = c("No", "Yes"))) %>%
+  dplyr::group_split(Resample) %>%
+  purrr::map( ~ caret::confusionMatrix(data=.x$pred2, reference=.x$obs, positive="Yes"))
+
+rf_folds_CM # again, the results appear robust against sampling variance
+
+# I really like how the RF model is performing and do not see a need to change the threshold from 0.50 or do further tuning of mtry or ntree.
+
+# calculate the probabilities for use in ROC Curve
+rf.prob <- predict(haiti.tarp.rf, newdata = test.haiti.data, type = "prob")
+# AUC is 99.40042%
+colAUC(rf.prob, test.haiti.data$tarp.num, plotROC=TRUE)
+
+# prepare values for use in table 1
+rf_threshold <- 0.50
+rf_AUC <- 0.9940042
+
+rf.t1.vector <- c(rf_perf$overall[1], rf_AUC, rf_threshold, rf_perf$byClass[1], rf_perf$byClass[2], (1-rf_perf$byClass[3]), rf_perf$byClass[5]) %>% as.data.frame()
+
+rf.t1.vector <- round_df(rf.t1.vector, 4)
+# rf.t1.vector
+```
+
+
+### Support Vector Machine
+
+Based on the observed data cloud and the known poor performance of the LDA model at this juncture, we will investigate an svmRBF model to see if the added flexibility enables a better predictive model against the non-linearity we see in the observations. We will use a range of values for our Cost, C, and our gamma (represented by sigma values) using a tuneGrid in CARET to adjust the level of "softness" of our margin to enable CARET to further optimize a choice of the final model. If we do not see a solid performing model, we will turn to svmPoly though due to the higher computational intensity required--this will not be our preferred choice unless necessary. The concern is primarily cost/benefit in that we want a dynamic model, high performing, and ultimately something we can deploy robustly in a changing environment on the ground.
+
+
+```{r}
+# I went off of my turned in HW, which included the following sources:
+# https://rpubs.com/uky994/593668
+# http://learnrmanoharkapse.blogspot.com/2019/01/basic-of-r-session-21-support-vector.html
+# I did vary the sigma values and the C values to allow some room for caret to 
+# find the optimal model
+
+# Radial was chosen based of observation of the data cloud and a preference for the RBF over the svmPoly model, judging from earlier experience and concerns over computing resources.
+
+set.seed(91)
+haiti.tarp.svm <- train(tarp~Red+Green+Blue, data = train.haiti.data,
+                        method="svmRadial",
+                        scale=FALSE,
+                        trControl=trainControl(method="cv", number=10,
+                                               returnResamp = 'all',
+                                               savePredictions = 'final',
+                                               classProbs = TRUE,
+                         allowParallel = TRUE),
+                        preProcess=c("center", "scale"),
+                        tuneGrid = data.frame(sigma=c(0.1, 0.25, 0.5, 1, 2),
+                                              C=c(0.1, 1, 5, 10, 100)))
+
+haiti.tarp.svm # sigma of 2, C of 100, accuracy 99.7%
+
+# find the predictions against test data
+svm.pred = predict(haiti.tarp.svm, newdata = test.haiti.data)
+
+
+# Develop Confusion Matrix and assign it for later use
+svm_perf <- confusionMatrix(svm.pred, test.haiti.data$tarp, positive = "Yes")
+svm_perf
+
+# checking the ppv, for use in calculating fdr
+# svm_perf$byClass[3]
+
+# tibble(haiti.tarp.svm$pred)
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15268    31
+#        Yes    19   493
+#                                           
+#                Accuracy : 0.9968          
+#                  95% CI : (0.9958, 0.9977)
+#     No Information Rate : 0.9669          
+#     P-Value [Acc > NIR] : <2e-16          
+#                                           
+#                   Kappa : 0.9501          
+#                                           
+#  Mcnemar's Test P-Value : 0.1198          
+#                                           
+#             Sensitivity : 0.9988          
+#             Specificity : 0.9408          
+#          Pos Pred Value : 0.9980          
+#          Neg Pred Value : 0.9629          
+#              Prevalence : 0.9669          
+#          Detection Rate : 0.9657          
+#    Detection Prevalence : 0.9676          
+#       Balanced Accuracy : 0.9698          
+#                                           
+#        'Positive' Class : No    
+
+threshold <- 0.50
+# learned from Office Hours with Prof. Schwartz
+svm_folds_CM <- haiti.tarp.svm$pred %>%
+  dplyr::mutate(pred2 = ifelse(Yes > threshold, "Yes", "No")) %>%
+  dplyr::mutate(pred2 = factor(pred2, levels = c("No", "Yes"))) %>%
+  dplyr::group_split(Resample) %>%
+  purrr::map( ~ caret::confusionMatrix(data=.x$pred2, reference=.x$obs, positive = "Yes"))
+
+svm_folds_CM # Results appear robust against sampling variance
+
+# There is a slight bit of room for improvement, I think.
+threshold <- 0.40
+
+# find the predictions against test data
+svm.pred2 = as.factor(ifelse(predict(haiti.tarp.svm, newdata = test.haiti.data, type = 'prob')$Yes>threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+svm_perf2 <- confusionMatrix(svm.pred2, test.haiti.data$tarp, positive = "Yes")
+# svm_perf2$table
+
+# This is about the best I think I can get it, within my risk tolerance.
+svm_perf2
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    No   Yes
+#        No  15265    24
+#        Yes    22   500
+#                                           
+#                Accuracy : 0.9971          
+#                  95% CI : (0.9961, 0.9979)
+#     No Information Rate : 0.9669          
+#     P-Value [Acc > NIR] : <2e-16          
+#                                           
+#                   Kappa : 0.9545          
+#                                           
+#  Mcnemar's Test P-Value : 0.8828          
+#                                           
+#             Sensitivity : 0.9986          
+#             Specificity : 0.9542          
+#          Pos Pred Value : 0.9984          
+#          Neg Pred Value : 0.9579          
+#              Prevalence : 0.9669          
+#          Detection Rate : 0.9655          
+#    Detection Prevalence : 0.9670          
+#       Balanced Accuracy : 0.9764          
+#                                           
+#        'Positive' Class : No  
+
+# calculate the probabilities for use in ROC Curve
+svm.prob <- predict(haiti.tarp.svm, newdata = test.haiti.data, type = "prob")
+# AUC is 99.96907%
+colAUC(svm.prob, test.haiti.data$tarp.num, plotROC=TRUE)
+
+# prepare table 1 values
+svm_threshold <- 0.40
+svm_AUC <- 0.9996907
+
+svm.t1.vector <- c(svm_perf2$overall[1], svm_AUC, svm_threshold, svm_perf2$byClass[1], svm_perf2$byClass[2], (1-svm_perf2$byClass[3]), svm_perf2$byClass[5]) %>% as.data.frame()
+
+svm.t1.vector <- round_df(svm.t1.vector, 4)
+# svm.t1.vector
+```
+
+### Table 1
+
+```{r table 1}
+# create the table, name the columns from the confusion matrices, which were
+# set in each model chunk as the "model".t1.vector of each final model 
+# finally name the rows
+t1 <- cbind(knn.t1.vector, lda.t1.vector, qda.t1.vector, glm.t1.vector, 
+            rf.t1.vector, svm.t1.vector)
+colnames(t1) <- c("knn (k=7)", "lda", "qda", "log reg", "RF (mtry=2)", "svmRBF (sigma=2, c=100)")
+rownames(t1)<- c('Accuracy', 'AUC', 'Threshold', 'Sensitivity', 'Specificity', 'FDR', 'Precision')
+t1
+```
+
+## Table 1 and Model Development/Tuning Phase Discussion
+
+We essentially have three models (KNN, RF, svmRBF - listed by performance) that are very close in their key metrics and somewhat separate themselves from the pack. In particular, regarding the three key metrics we are interested in (sensitivity, specificity and precision) we can see these three models standing out. Computationally, the RF model was less costly than the knn and svmRBF models and we will keep this in mind going forward. We also know that our results do depend on sampling variance, though the models appear generally robust with the small training data set. We will have to monitor if this scenario proves to be the case in the larger fho data that represents the bulk of the observations. It might be the case that when we look at the fho data, we find even small sampling variance could be on aggregate a major consideration given the enormity of the response we are planning (~2M individual recoveries). 
+
+Behind these three models, the logistic regression model--which was also computationally less intensive--is a close fourth model but it does lag in specificity, which at this juncture is a concern as it may lead to a higher number of false positives and unsuccessful commitment of precious resources.
+
+So, at this juncture I do expect that the either of our top three models will do well against the final hold out data set. As mentioned, the RF model was a much simpler computational model to derive and--should continuous recovery options begin to seem possible with new data streaming into our operation--this result will factor into model choice decisions. For example, I could see us developing and deploying a handheld device to each recovery team that allows us to update our model and improve our predictions so that we steadily get better throughout the duration of the operation.
+
+Of brief note, the discriminant analysis (LDA/QDA) models fell behind the top three models pretty quickly (particularly on specificity and fdr). Along with the logistic regression model, these three lagging models would have to demonstrate a serious robustness in the fho data performance phase for them to warrant more serious consideration.
+
+
+## Final Hold Out Data Phase
+
+### Ingest the FHO Data
+
+The fho data set was separately cleaned using R and manual deletions of unnecessary rows in the given text file. The prepared csv is ingested in this next section.
+
+```{r fho data}
+haiti_fho <- read.table("../data/fho.csv", header=TRUE, sep = ",")
+# need to shuffle the data
+str(haiti_fho)
+haiti_fho$tarp <- as.factor(haiti_fho$tarp)
+# is.factor(haiti_fho$tarp)
+str(haiti_fho)
+# names(haiti_fho)
+# head(haiti_fho)
+# tail(haiti_fho)
+# contrasts(haiti_fho$tarp)
+# contrasts(haiti_original$tarp)
+
+# looks like we are in good shape for making some predictions
+
+# let's take a quick look at a small sampling of the data just to get a
+# visualization of its shape and contours
+
+set.seed(101)
+haiti.sample.ind.fho <- sample.int(nrow(haiti_fho), nrow(haiti_fho)*0.05, replace=F)
+haiti.sample <- haiti_fho[haiti.sample.ind.fho,]
+# dim(haiti.sample) # 100208, 6
+names(haiti.sample)
+
+color_3d.fho <-plot_ly(haiti.sample, x=~Red, y=~Green, z=~Blue,
+                   color=~temp_Class, colors = c('#0E74EB', '#F0CD62'),
+                   size=1)
+color_3d.fho<-color_3d.fho%>%add_markers()
+color_3d.fho
+
+# shuffle the data before evaluating it against our models
+set.seed(101)
+# reference Office Hours with Prof. Schwartz
+haiti_fho <- dplyr::sample_n(haiti_fho, nrow(haiti_fho))
+```
+
+### Quick observations from the FHO Data
+
+The general shape appears to be the same as the initial training set (~60K obs.) in the 5% (~100K obs.) sample I've shown above. That said, and perhaps importantly I can make the observation that there appears to be more of a "margin" or space between the blue tarp observations and the other categories of classification in the fho data suggesting that the optimal model choice may be different than what we determined in the model selection phase earlier.
+
+## Performance and Results
+
+Each model from phase 1 along with any tuning parameter decisions and thresholds has been carried forward into the fho data evaluation below.
+
+### LDA FHO Performance
+
+```{r lda fho}
+
+# find the predictions against fho data at the pre-existing threshold
+lda.pred.fho = as.factor(ifelse(predict(haiti.tarp.lda, newdata = haiti_fho, type = 'prob')$Yes>lda_threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+lda.perf.fho <- confusionMatrix(lda.pred.fho, haiti_fho$tarp, positive = "Yes")
+lda.perf.fho
+
+lda_perf.fho.f1 <- 2*13197/(2*13197+1283+40542)
+lda_perf.fho.f1 # 0.386901
+
+#           Reference
+# Prediction      No     Yes
+#        No  1949155    1283
+#        Yes   40542   13197
+#                                           
+#                Accuracy : 0.9791          
+#                  95% CI : (0.9789, 0.9793)
+#     No Information Rate : 0.9928          
+#     P-Value [Acc > NIR] : 1               
+#                                           
+#                   Kappa : 0.3798          
+#                                           
+#  Mcnemar's Test P-Value : <2e-16          
+#                                           
+#             Sensitivity : 0.9796          
+#             Specificity : 0.9114          
+#          Pos Pred Value : 0.9993          
+#          Neg Pred Value : 0.2456          
+#              Prevalence : 0.9928          
+#          Detection Rate : 0.9725          
+#    Detection Prevalence : 0.9732          
+#       Balanced Accuracy : 0.9455          
+#                                           
+#        'Positive' Class : No
+
+
+# build a function that creates each vector I will need for the final table
+# later on
+vector.build <- function(input.df, val1, val2){
+  output <- c(input.df$overall[1], val1, val2, input.df$byClass[1], input.df$byClass[2], (1-input.df$byClass[3]), input.df$byClass[5]) %>% as.data.frame()
+  output <- round_df(output, 4)
+  output
+}
+# ROC
+lda.prob.fho <- predict(haiti.tarp.lda, newdata = haiti_fho, type = "prob")
+# AUC is 99%
+colAUC(lda.prob.fho, haiti_fho$tarp, plotROC=TRUE)
+# set the values and use the vector coming out of the Confusion Matrix against
+# the fho
+lda.fho.AUC <- 0.993
+lda.t2.vector <- vector.build(lda.perf.fho, lda.fho.AUC, lda_threshold)
+# lda.t2.vector
+```
+
+### QDA FHO Peformance
+
+```{r qda fho}
+# find the predictions against test data using pre-existing threshold 
+qda.pred.fho = as.factor(ifelse(predict(haiti.tarp.qda, newdata = haiti_fho, type = 'prob')$Yes>qda_threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+qda.perf.fho <- confusionMatrix(qda.pred.fho, haiti_fho$tarp, positive = "Yes")
+# qda.perf.fho$table
+
+qda.perf.fho
+
+qda_perf.fho.f1 <- 2*8254/(2*8254+13738+6226)
+qda_perf.fho.f1 # 0.4526212
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction      No     Yes
+#        No  1975959    6226
+#        Yes   13738    8254
+#                                           
+#                Accuracy : 0.99            
+#                  95% CI : (0.9899, 0.9902)
+#     No Information Rate : 0.9928          
+#     P-Value [Acc > NIR] : 1               
+#                                           
+#                   Kappa : 0.4478          
+#                                           
+#  Mcnemar's Test P-Value : <2e-16          
+#                                           
+#             Sensitivity : 0.9931          
+#             Specificity : 0.5700          
+#          Pos Pred Value : 0.9969          
+#          Neg Pred Value : 0.3753          
+#              Prevalence : 0.9928          
+#          Detection Rate : 0.9859          
+#    Detection Prevalence : 0.9890          
+#       Balanced Accuracy : 0.7816          
+#                                           
+#        'Positive' Class : No
+
+# ROC Curve
+qda.prob.fho <- predict(haiti.tarp.qda, newdata = haiti_fho, type = "prob")
+# AUC is 79%
+colAUC(qda.prob.fho, haiti_fho$tarp, plotROC=TRUE)
+# set the values and use the vector coming out of the ConfusionMatrix against
+# the fho
+qda.fho.AUC <- 0.788099
+qda.t2.vector <- vector.build(qda.perf.fho, qda.fho.AUC, qda_threshold)
+# qda.t2.vector
+```
+
+### Logistic Regression Performance
+
+```{r log reg fho}
+glm.pred.fho = predict(haiti.tarp.glm, newdata = haiti_fho)
+
+# Develop Confusion Matrix and assign it for later use
+glm_perf.fho <- confusionMatrix(glm.pred.fho, haiti_fho$tarp, positive = "Yes")
+glm_perf.fho
+
+glm_perf.fho.f1 <- 2*14373/(2*14373+20003+107)
+glm_perf.fho.f1 # 0.5883822
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction      No     Yes
+#        No  1969694     107
+#        Yes   20003   14373
+#                                       
+#                Accuracy : 0.99        
+#                  95% CI : (0.99, 0.99)
+#     No Information Rate : 0.993       
+#     P-Value [Acc > NIR] : 1           
+#                                       
+#                   Kappa : 0.584       
+#                                       
+#  Mcnemar's Test P-Value : <2e-16      
+#                                       
+#             Sensitivity : 0.990       
+#             Specificity : 0.993       
+#          Pos Pred Value : 1.000       
+#          Neg Pred Value : 0.418       
+#              Prevalence : 0.993       
+#          Detection Rate : 0.983       
+#    Detection Prevalence : 0.983       
+#       Balanced Accuracy : 0.991       
+#                                       
+#        'Positive' Class : No 
+
+# ROC Curve
+glm.prob.fho <- predict(haiti.tarp.glm, newdata = haiti_fho, type = "prob")
+# AUC is 100%
+colAUC(glm.prob.fho, haiti_fho$tarp, plotROC=TRUE)
+# set the values and use the vector coming out of the ConfusionMatrix against
+# the fho
+glm.fho.AUC <- 0.996219
+glm.t2.vector <- vector.build(glm_perf.fho, glm.fho.AUC, glm_threshold)
+# glm.t2.vector
+```
+
+
+### KNN FHO Performance
+
+```{r knn fho}
+knn.pred.fho = predict(haiti.tarp.knn.cv, newdata = haiti_fho)
+
+# Develop Confusion Matrix and assign it for later use
+knn_perf.fho <- confusionMatrix(knn.pred.fho, haiti_fho$tarp, positive = "Yes")
+knn_perf.fho
+
+knn_perf.fho.f1 <- 2*12225/(2*12225+2255+11973)
+knn_perf.fho.f1 # 0.6321423
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction      No     Yes
+#        No  1977724    2255
+#        Yes   11973   12225
+#                                          
+#                Accuracy : 0.9929         
+#                  95% CI : (0.9928, 0.993)
+#     No Information Rate : 0.9928         
+#     P-Value [Acc > NIR] : 0.01776        
+#                                          
+#                   Kappa : 0.6288         
+#                                          
+#  Mcnemar's Test P-Value : < 2e-16        
+#                                          
+#             Sensitivity : 0.9940         
+#             Specificity : 0.8443         
+#          Pos Pred Value : 0.9989         
+#          Neg Pred Value : 0.5052         
+#              Prevalence : 0.9928         
+#          Detection Rate : 0.9868         
+#    Detection Prevalence : 0.9879         
+#       Balanced Accuracy : 0.9191         
+#                                          
+#        'Positive' Class : No 
+       
+knn.prob.fho <- predict(haiti.tarp.knn.cv, newdata = haiti_fho, type = "prob")
+# AUC is 0.9631302
+colAUC(knn.prob.fho, haiti_fho$tarp, plotROC=TRUE)
+# set the values and use the vector coming out of the Confusion Matrix against
+# the fho
+
+knn.fho.AUC <- 0.9631302 # from ROC Curve
+knn.t2.vector <- vector.build(knn_perf.fho, knn.fho.AUC, knn_threshold)
+# knn.t2.vector
+
+```
+
+### RF FHO Performance
+
+```{r RF FHO}
+# find the predictions against test data, using default 0.50 threshold
+rf.pred.fho = predict(haiti.tarp.rf, newdata = haiti_fho)
+
+# Develop Confusion Matrix and assign it for later use
+rf_perf.fho <- confusionMatrix(rf.pred.fho, haiti_fho$tarp, positive = "Yes")
+rf_perf.fho
+
+rf_perf.fho.f1 <- 2*11443/(2*11443+9646+3037)
+rf_perf.fho.f1 # 0.6434255
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction      No     Yes
+#        No  1980051    3037
+#        Yes    9646   11443
+#                                           
+#                Accuracy : 0.9937          
+#                  95% CI : (0.9936, 0.9938)
+#     No Information Rate : 0.9928          
+#     P-Value [Acc > NIR] : < 2.2e-16       
+#                                           
+#                   Kappa : 0.6403          
+#                                           
+#  Mcnemar's Test P-Value : < 2.2e-16       
+#                                           
+#             Sensitivity : 0.9952          
+#             Specificity : 0.7903          
+#          Pos Pred Value : 0.9985          
+#          Neg Pred Value : 0.5426          
+#              Prevalence : 0.9928          
+#          Detection Rate : 0.9880          
+#    Detection Prevalence : 0.9895          
+#       Balanced Accuracy : 0.8927          
+#                                           
+#        'Positive' Class : No 
+rf.prob.fho <- predict(haiti.tarp.rf, newdata = haiti_fho, type = "prob")
+# AUC is 98%
+colAUC(rf.prob.fho, haiti_fho$tarp, plotROC=TRUE)
+# set the values and use the vector coming out of the Confusion Matrix against
+# the fho
+rf.fho.AUC <- 0.9803092
+rf.t2.vector <- vector.build(rf_perf.fho, rf.fho.AUC, rf_threshold)
+# rf.t2.vector # looks like it had a some problem with fho data, mmm
+
+```
+
+
+### SVM FHO Performance
+
+```{r svm fho}
+# find the predictions against test data using pre-existing threshold
+svm.pred.fho = as.factor(ifelse(predict(haiti.tarp.svm, newdata = haiti_fho, type = 'prob')$Yes>svm_threshold, "Yes", "No"))
+
+# Develop Confusion Matrix and assign it for later use
+svm_perf.fho <- confusionMatrix(svm.pred.fho, haiti_fho$tarp, positive = "Yes")
+
+
+# This is about the best I think I can get it, within my risk tolerance.
+svm_perf.fho
+# svm_perf.fho.recall <- 5044/(9436+5044)
+# svm_perf.fho.recall # 0.3483425
+svm_perf.fho.f1 <- 2*5044/(2*5044+14879+9436)
+svm_perf.fho.f1 # 0.2932
+
+# svm_perf.fho$byClass[1]*2*svm_perf.fho$byClass[5]/(svm_perf.fho$byClass[5]+svm_perf.fho$byClass[1])
+
+# sens = recall
+# ppv = precision
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction      No     Yes
+#        No  1974818    9436
+#        Yes   14879    5044
+#                                          
+#                Accuracy : 0.9879         
+#                  95% CI : (0.9877, 0.988)
+#     No Information Rate : 0.9928         
+#     P-Value [Acc > NIR] : 1              
+#                                          
+#                   Kappa : 0.2873         
+#                                          
+#  Mcnemar's Test P-Value : <2e-16         
+#                                          
+#             Sensitivity : 0.9925         
+#             Specificity : 0.3483         
+#          Pos Pred Value : 0.9952         
+#          Neg Pred Value : 0.2532         
+#              Prevalence : 0.9928         
+#          Detection Rate : 0.9854         
+#    Detection Prevalence : 0.9901         
+#       Balanced Accuracy : 0.6704         
+#                                          
+#        'Positive' Class : No
+
+# ROC Curve
+svm.prob.fho <- predict(haiti.tarp.svm, newdata = haiti_fho, type = "prob")
+# AUC is 93%
+colAUC(svm.prob.fho, haiti_fho$tarp, plotROC=TRUE)
+# set the values and use the vector coming out of the ConfusionMatrix against
+# the fho
+svm.fho.AUC <- 0.9270141
+svm.t2.vector <- vector.build(svm_perf.fho, svm.fho.AUC, svm_threshold)
+# svm.t2.vector # not pretty, not at all.
+```
+
+
+## Table 2 and Discussion
+
+```{r t2}
+# create the table, name the columns from the confusion matrices, which were
+# set in each model chunk as the "model".t1.vector of each final model 
+# finally name the rows
+t2 <- cbind(knn.t2.vector, lda.t2.vector, qda.t2.vector, glm.t2.vector, 
+            rf.t2.vector, svm.t2.vector)
+colnames(t2) <- c("knn (k=7)", "lda", "qda", "log reg", "RF (mtry=2)", "svmRBF (sigma=2, c=100)")
+rownames(t2)<- c('Accuracy', 'AUC', 'Threshold', 'Sensitivity', 'Specificity', 'FDR', 'Precision')
+t2
+```
+
+
+## Conclusions
+
+References used on image insertion:
+https://www.earthdatascience.org/courses/earth-analytics/document-your-science/add-images-to-rmarkdown-report/
+
+### Performance Discussion CV and FHO
+
+These results shown in Table 2 are somewhat surprising. Each of our top three model choices shown in Table 1 (RF, SVM, KNN) heading into the fho validation phase performed worse against the new data in what we had said would be our key metrics (sensitivity, specificity and precision). For example, the KNN model's specificity went from 0.9618 to 0.8443 with a slightly healthy change in its precision (going from 0.9987 to 0.9989). The specificity decrease represents a major concern, however, given that it indicates a potentially high risk rate of false positives. The RF model's specificity went from 0.9561 down to 0.7903 as it's precision and sensitivity values generally proved stable without much change. The svmRBF model's specificity fell of the cliff from 0.9542 down to 0.3483, which suggests the new data is not of the same size/shape/dimensions as our initial training data.
+
+Our discriminant analysis models had a mixed result where we saw some improvement in the lda model and a drastic dropoff in specificity for the qda model. For example, the lda model's specificity went up 10% from 0.8111 to 0.9114 while it's fdr went down from 0.0065 to 0.0007 with corresponding high sensitivity and precision values. This outcome represents a nice bump in both metrics in the fho data suggesting a potential solid fit to the new data. The qda model had a much different result with it's specificity going from 0.8569 down to 0.57, while it's sensitivity and precision values were generally stable.
+
+So, with these mixed results there might have been some consternation in a final choice but a major surprise occurred in that the logistic regression model appears to have outperformed all the other models against the fho data in areas we care about most and would represent a choice at this stage. The glm model's specificity went from 0.9084 (not bad) up to 0.9926 (great!) in the fho data. You can see this play out in the cumulative sum of false negatives, which was dramatically low (107) relative to any other model. Moreover, the precision improved (from 0.9969 to 0.9999) and the sensitivity had a small bump up. 
+
+That said, the one potential drawback is that the glm model had a 0.0001 fdr but that amounts to ~20K false positives, which will drain our resources potentially. Statistically speaking it is a low rate but the cumulative metric matters in this recovery operation as we have indicated earlier. Stemming from our earlier discussion on the fho hold out data, we guessed that the conclusions might be different and so taking a quick look at a side by side comparison of a slightly zoomed in image of each data cloud we can see that there is a relatively more sparse appearing number of "intertwined" observations in a comparison image of our sample fho data (below right) than our training data (below left), despite actually having a larger total number of observations. To me, this points to an opportunity to use a less flexible and simpler model, if we can still achieve high performance metrics.
+
+![training(left) vs. fho data clouds(right)](../images/clouds.png)
+
+### Compatibility and Reconciliation
+
+These results point to some underlying assumptions inherent in each of the models that were different from the initial training data and the fho data. For example, the training data seemed to have greater potential for a nonlinear boundary between classes based on a plot of the data cloud, which led to decisions such as heavily considering the svmRBF as a subset of available SVM models. We also saw the lda model perform poorly. 
+
+But instead we find the lda model performing somewhat improved against the  larger data set, which brings up two potential considerations in terms of reconciling these differences. If we have sufficient time in the model build phase, which is dubious at best, we could consider running a computationally intensive model such as an svmLinear model. 
+
+We could also combine the training data and the fho data and retrain and deploy the models using potentially one of our two top running candidates at the moment (the glm logistic regression model and the RF model). In my view, the glm model and the RF model make sense in that they are not computationally expensive and their performance is high. There would be risk in choosing the svmLinear model in devoting precious resources, in my view. 
+
+### Model Choice
+
+If we did not have further time and an ability to alter some of the key factors playing into a decision, I would go with the logistic regression model given how well it performed against the fho data and as mentioned above. To hedge, I would work in parallel to a) develop a way to continue gaining data from the field and b) improving and re-deploying the model. This to me speaks to the need to keep the computational time reduced, while maintaining performance and accuracy. I would even further hedge against risk of this choice not proving robust in the future by also taking a look at the RF model in a full data set in a CV training mode with the training and fho data combined, as mentioned.
+
+As discussed in Project 1, I would also clearly communicate to the recovery teams that we expect a fair amount of false positives but that we wanted to collect further data (at each false positive site) to enable model improvement. I would also ensure the recovery teams knew that the risk being weighed was that we had a much better chance of saving lives, given how low the false negative rate was, with the slightly added cost of some false positives. I think this rationale would probably resonate well but based on the terrain, safety considerations, and overall stress of continuous crisis operations--I would want to properly acknowledge the toll of the slightly high fdr with the logistic regression model.
+
+### Metrics Relevance
+
+I think the metrics are pretty well suited to a predictive model that is being used to identify blue tarps and potential life saving situations for recovery teams. That said, there's quite a bit of knowledge left out of the metrics requested in this report that if slightly expanded, could lead to and inform potentially better decisions. For example, the network of points and distance between each point is a missing factor that could really drive operational planning considerations. Specifically, you could see potentially knowing how to deploy your teams in numbers in and around clustered blue tarps, while potentially using assets such as rotary wing to get to the more isolated locations with the advantage of such data. Moreover, another missing variable is "time", in that we do not know when each observation was made and therefore do not necessarily know who is in a more dire condition. The time element could potentially play a role in how we would deploy the recovery teams as you would want to work your way towards the "most" locations and the "earliest identified" locations as presumably each survivor's situation becomes more dire the longer it takes for them to be contacted and given aid. Of course, this type of decision assumes that the observation data is in fact linked to the length of time an individual has put up a temporary shelter (and has been observed). Barring information on the time element, it would be reasonable to assume that each survivor associated with a blue tarp is in generally the same boat in terms of the number of days since the earthquake and that would be my operational and planning assumption. I would also assume that the # of survivors at each blue tarp is the same, though information on those locations would improve planning. Time and feasibility to collect such information is dubious, however.
+
+One potentially different way of looking at the metrics is a simplification in terms of combining the information you get from precision and sensitivity (recall) into one metric. The F1 score is potentially useful in that context, which is why we did go back in and add F1 scoring to each model in the FHO phase. 
+
+### F1 Scoring
+
+The F1 score is potentially another way of looking at the performance of our models--so using the values we developed in each evaluation on the fho data--you can see the values below for each model type. We are looking at values in relative terms (between 0 and 1) and closer to 1 is better. The RF model clearly is superior though the KNN model is performing nicely as well. The logistic regression model has a slight lag but it is also performing reasonably well. With all of this said, it is incredibly difficult to be sure of a singular final choice. But first, I do want to take a look at risk in a slighly different angle and approach using more operational planning factors and concerns.
+
+```{r add f1 scores}
+
+# used the f1 formula provided in the module content for the project
+
+f1.scores <- c(knn_perf.fho.f1, lda_perf.fho.f1, qda_perf.fho.f1, glm_perf.fho.f1, rf_perf.fho.f1, svm_perf.fho.f1)
+
+# f1.scores
+method <- c("knn", "lda", "qda", "glm", "rf", "svm")
+t3 <- cbind(method, f1.scores) %>% as.tibble()
+t3
+
+# we know that the values are relative and what sticks out is that the knn model and the rf model 
+# separate themselves with only the glm model holding not too far behind.
+
+```
+
+
+## Cost/Risk Analysis
+
+### Time Costs
+
+In this recovery operation, the deployment of recovery teams will start out with some number of conditioned "positives". Some of these positives, as we know and have discussed, will be very successful and lead to providing much needed aid to a true survivor using a blue tarp as shelter. Unfortunately, some of these "positives" are false and we've been discussing how that will strain our resources.
+
+So, one way of scoping how this might play out is to look at how long it might take the recovery teams to visit each of these conditioned "positive" hits and judge the model based first on how many of the encounters are going to be successful over time. This next section attempts to do that. In discussion, this initial step will be discussed as a "first wave" of our operations. The first wave is the actionable idea or concept we can undertake right away. We'll talk about the aftermath of the first wave later on in the discussion.
+
+So, one can see from the tabular data in the table below, that several models hypothetically would have driven operations that end at about the ~4 day mark (o/a ~ 22 January) in this so called "first wave". You can also see a hypothetical estimated "rough" schedule on when each deployed method would lead the teams to "think" they are done with a blue line showing for all the models but the logistic regression model, which is separately shown in red. Undoubtedly, by this "hypothetical" point in the operation, there will be a spell of relief for those teams and a sense of accomplishment from those involved in scoping the problem. That said, and as shown by the vertical red line, the logistic regression model comes in fourth place (out of this subset of competing models) ~6.5 days (o/a ~ 24 Jan). While slower, the one advantage those teams will have is that they will have all but erased uncertainty on saving survivors as they are left with an astonishingly low number of false negatives (107) that is at least an order of magnitude lower than its nearest competitors. However, this residual problem presents a much different challenge than how we planned the first wave.
+
+
+```{r first recovery wave}
+
+# set up the nominal max recoveries per day value
+# these are planning assumptions based on data inspired from the 
+# wikipedia page on the haiti earthquake and a separate ngo reference:
+# https://en.wikipedia.org/wiki/2010_Haiti_earthquake
+# https://www.worldvision.org/disaster-relief-news-stories/2010-haiti-earthquake-facts
+
+# 20000 aid works, 5 per team, 2 recoveries per day, 2/3 teams active per day
+max_recovery <- (20000/5)*2*0.67
+# total number of recoveries needed
+# summary(haiti_fho$tarp) #14480
+# summary(haiti_original$tarp) #2022
+total.recoveries <- 14480+2022 #16502
+# total.recoveries
+
+
+
+method <- c("lda", "qda", "glm", "knn", "rf", "svm")
+false.pos <- c(40542,13738,20003,11973,9646,14879)
+false.neg <- c(1283,6226,107,2255,3037,9436)
+true.pos <- c(13197,8254,14373,12225,11443,5044)
+
+t4 <- cbind.data.frame(method, false.pos, false.neg, true.pos)
+
+t4$false.pos <- as.numeric(t4$false.pos)
+t4$false.neg <- as.numeric(t4$false.neg)
+t4$true.pos <- as.numeric(t4$true.pos)
+t4$total.pos <- as.numeric(t4$false.pos+t4$true.pos)
+t4$firstwave.days <- round_df((as.double(t4$total.pos/max_recovery)), 2)
+t4$perf.rate.pos <- round_df((as.double(t4$true.pos/t4$total.pos)), 2)
+t4$perf.rate.neg <- round_df((as.double(t4$false.pos/t4$total.pos)), 2)
+# t4 %>% as.tibble()
+t4 %>% as.tibble()
+
+options(digits = 2)
+
+# https://lubridate.tidyverse.org/
+t.days <- seq(ymd('2010-01-17'), ymd('2010-01-25'), by= "1 days")
+
+
+# build a function to build the various data frames we will need
+op.time <- function(input.df, method.name, success.rate, fail.rate){
+  input.df <- cbind.data.frame(t.days)
+  input.df$method <- c(rep(method.name))
+  input.df$success.daily <- max_recovery*success.rate
+  input.df$success.total <- cumsum(input.df$success.daily)
+  input.df$fail.daily <- max_recovery*fail.rate
+  input.df$fail.total <- cumsum(input.df$fail.daily)
+  input.df
+}
+
+knn.op <- data.frame((NA))
+knn.op <- op.time(knn.op, "knn", t4$perf.rate.pos[4], t4$perf.rate.neg[4]) %>% as.data.frame()
+# knn.op
+
+rf.op <- data.frame((NA))
+rf.op <- op.time(rf.op, "rf", t4$perf.rate.pos[5], t4$perf.rate.neg[5]) %>% as.data.frame()
+# rf.op
+# t4
+glm.op <- data.frame((NA))
+glm.op <- op.time(glm.op, "glm", t4$perf.rate.pos[3], t4$perf.rate.neg[3]) %>% as.data.frame()
+# glm.op
+
+qda.op <- data.frame((NA))
+qda.op <- op.time(qda.op, "qda", t4$perf.rate.pos[2], t4$perf.rate.neg[2]) %>% as.data.frame()
+
+svm.op <- data.frame((NA))
+svm.op <- op.time(svm.op, "svm", t4$perf.rate.pos[6], t4$perf.rate.neg[6]) %>% as.data.frame()
+# svm.op
+
+t5 <- rbind(rf.op, knn.op, glm.op, qda.op, svm.op)
+# names(t5)
+# t4
+t5.by.method <- t5 %>%
+  group_by(method)
+
+# used Wickham R for Data Science for plot ideas
+par(mfrow=c(1,2))
+
+ggplot(t5.by.method, aes(x=t.days, y=success.total, color=method)) +
+    geom_line() +
+    geom_vline(xintercept = c(t.days[6], t.days[8]), color= c('blue','red')) +
+    ggtitle(label = "Days to Reach Predicted True Positives", subtitle = "Estimated Complete (all but glm) Blue, Estimated Complete (glm) Red")
+
+ggplot(t5.by.method, aes(x=t.days, y=fail.total, color=method)) +
+    geom_line() +
+    geom_vline(xintercept = c(t.days[6], t.days[8]), color= c('blue','red')) +
+    ggtitle(label = "Days to Reach Predicted False Positives", subtitle = "Estimated Complete (all but glm) Blue, Estimated Complete (glm) Red")
+
+```
+
+### Residual Unknown Costs
+
+In terms of dealing with these false negatives it really is a perilous activity that is hard to quantify. In a real world scenario, I would not expect the planners or the teams to have truly wonderful methods for getting at the problem as you never really fully understand exactly what you "missed" or cannot "see". For example, despite the fact that the rf, knn, qda and svm models finish relatively ahead in our hypothetical scenario, each of those scenarios would still have 1,000's of survivors left unaccounted for if that was the chosen route. And as each day passes, the likelihood of survival goes down for those victims unfortunately as in general the aid teams are already arriving several days after the earthquake and starvation and dehydration will start to take a serious toll starting at about the 5-7 mark. 
+
+One can imagine that the soft indicator (or signal) representing these missing families will be coming in through desperate communications to local law enforcement and health professionals. There will undoubtedly be some very useful information from those communications that could drive further deployment of teams to continue the recovery operations. That said, it will be very difficult to complete this final arduous task and I would expect such operations to move many times slower than the original deployments due to this uncertainty, problems with reconciliation, etc.
+
+Hence, I do feel that the logistic regression model would be the best choice in that it's effectiveness may not be realized as early as other hypothetical scenarios would, but the overall brilliance will manifest in somewhat of a low volume trickle of residual worry and concern amongst the local population. Specifically, the residual survivor count that would be the focus of this "2nd wave" of recovery operations is several times smaller in significance and intensity, though each family would be very important to strive for. But again, the volume and intensity would be expected to be lower though the political, public health, social and human life costs are very difficult to quantify but measurably better under this scenario. 
+
+### Technology Integration to Accelerate and Improve our Response
+
+One potential scenario that would be worth investigating, using either international military humanitarian efforts or NGO's, would be to look at iterative operations with model improvements. You could see each 24-hour cycle involving incorporation of new data, new modeling and refinement of the next days operations.
+
+Some ideas I've discussed earlier in Project 1 still apply. I could see, for example, thermal sensors and imaging to provide nighttime information on the situation on the ground. This could be an additional feature that you could use to confirm your existing hypothesis and/or add additional predictive power. To further this advantage, teams conducting operations during the day (on land and in the air), could try and supply glow sticks and flares that the local populace could use to identify their position in the nighttime hours. I would expect this technology integration to be low-cost/low-tech but also potentially powerful.
+
+With all of this said, this scenario is considerably complex even with this narrowly scoped definition of the problem. But we can see how predictive models can better serve to simplify the problem and begin making the response manageable and viable on the ground to good purpose.
+
+
+```{r cores}
+# cores <- parallel::detectCores()
+# cores
+# 
+# all_cores <- parallel::detectCores(logical = FALSE)
+# all_cores
+# 
+# library(doParallel)
+# cl<-makePSOCKcluster(all_cores)
+# cl
+# registerDoParallel(cl)
+# 
+# library(tune)
+# grid_control<-control_grid(verbose = TRUE, pkgs = "doParallel", allow_par=TRUE)
+# stopCluster(cl)
+
+```
+
